@@ -20,6 +20,7 @@ from qgis.PyQt.QtCore import (
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     NULL,
+    QgsMapLayer,
     QgsVectorLayer,
     QgsRasterLayer,
     QgsSymbol,
@@ -63,7 +64,8 @@ from qgis.core import (
     QgsSingleBandGrayRenderer,
     QgsRasterPipe,
     QgsRasterDataProvider,
-    QgsColorRampShader
+    QgsColorRampShader,
+    QgsHeatmapRenderer
 )
 
 from .logger import Logger
@@ -124,6 +126,7 @@ class ConversionContext:
 class FslConverter:
     NULL_COLOR = "rgba(0, 0, 0, 0)"
     COLOR_RAMP_INTERPOLATION_STEPS = 30
+    SOLID_LINE_DASH_HACK = [1, 0]
 
     @staticmethod
     def create_symbol_dict() -> Dict[str, object]:
@@ -290,31 +293,13 @@ class FslConverter:
             layer.renderer(), context, layer.opacity()
         )
         if not fsl:
-            return None
+            fsl = {}
 
-        if layer.hasScaleBasedVisibility():
-            if layer.minimumScale():
-                if isinstance(fsl['style'], list):
-                    for style in fsl['style']:
-                        style['minZoom'] = (
-                            MapUtils.map_scale_to_leaflet_tile_zoom(
-                                layer.minimumScale()))
-                else:
-                    fsl['style']['minZoom'] = (
-                        MapUtils.map_scale_to_leaflet_tile_zoom(
-                            layer.minimumScale()))
-            if layer.maximumScale():
-                if isinstance(fsl['style'], list):
-                    for style in fsl['style']:
-                        style['maxZoom'] = (
-                            MapUtils.map_scale_to_leaflet_tile_zoom(
-                                layer.maximumScale()))
-                else:
-                    fsl['style']['maxZoom'] = (
-                        MapUtils.map_scale_to_leaflet_tile_zoom(
-                            layer.maximumScale()))
+        FslConverter.add_common_layer_properties_to_fsl(
+            layer, fsl, context
+        )
 
-        return fsl
+        return fsl or None
 
     @staticmethod
     def vector_renderer_to_fsl(renderer: QgsFeatureRenderer,
@@ -336,9 +321,7 @@ class FslConverter:
             QgsRuleBasedRenderer:
                 FslConverter.rule_based_renderer_to_fsl,
             QgsNullSymbolRenderer: FslConverter.null_renderer_to_fsl,
-
-            # Could potentially be supported:
-            # QgsHeatmapRenderer
+            QgsHeatmapRenderer: FslConverter.heatmap_renderer_to_fsl,
 
             # No meaningful conversions for these types:
             # Qgs25DRenderer
@@ -606,6 +589,45 @@ class FslConverter:
         }
 
     @staticmethod
+    def heatmap_renderer_to_fsl(renderer: QgsHeatmapRenderer,
+                                context: ConversionContext,
+                                layer_opacity: float = 1) \
+            -> Optional[Dict[str, object]]:
+        """
+        Converts a QGIS heatmap renderer to an FSL definition
+        """
+        colors = []
+        ramp = renderer.colorRamp()
+        for i in range(FslConverter.COLOR_RAMP_INTERPOLATION_STEPS):
+            val = i / FslConverter.COLOR_RAMP_INTERPOLATION_STEPS
+            color = ramp.color(val)
+            colors.append(color.name())
+
+        if renderer.weightExpression():
+            context.push_warning(
+                'Heatmap point weighting cannot be converted',
+                LogLevel.Warning,
+                detail={
+                    'object': 'renderer',
+                    'renderer': 'heatmap',
+                    'cause': 'heatmap_point_weight',
+                    'summary': 'heatmap with point weighting'
+                })
+
+        return {
+            "style": {
+                "color": colors,
+                "opacity": layer_opacity,
+                "size": FslConverter.convert_to_pixels(
+                    renderer.radius(), renderer.radiusUnit(),
+                    context),
+                "intensity": 1
+            },
+            "legend": {"displayName": {"0": "Low", "1": "High"}},
+            "type": "heatmap"
+        }
+
+    @staticmethod
     def null_renderer_to_fsl(renderer: QgsNullSymbolRenderer,
                              context: ConversionContext,
                              layer_opacity: float = 1) \
@@ -634,6 +656,12 @@ class FslConverter:
         if len(styles) < 1:
             return []
 
+        any_has_dash_array = False
+        for symbol in styles:
+            for layer in symbol:
+                if 'dashArray' in layer:
+                    any_has_dash_array = True
+
         result = []
         # upgrade all properties in first symbol to lists
         first_symbol = styles[0]
@@ -641,6 +669,9 @@ class FslConverter:
             list_dict = {}
             for key, value in layer.items():
                 list_dict[key] = [value]
+
+            if any_has_dash_array and 'dashArray' not in list_dict:
+                list_dict['dashArray'] = [FslConverter.SOLID_LINE_DASH_HACK]
             result.append(list_dict)
 
         for symbol in styles[1:]:
@@ -655,15 +686,12 @@ class FslConverter:
                     # symbol
                     if source_layer and key in source_layer:
                         value.append(source_layer[key])
+                    elif key == 'dashArray':
+                        value.append(FslConverter.SOLID_LINE_DASH_HACK)
                     else:
                         value.append(value[0])
 
         res = FslConverter.simplify_style(result)
-
-        for symbol in res:
-            if 'dashArray' in symbol and len(symbol['dashArray']) > 2:
-                # dash array limited to two values for varying styles
-                symbol['dashArray'] = symbol['dashArray'][:2]
 
         return res
 
@@ -773,7 +801,12 @@ class FslConverter:
         converted_symbols = []
         range_breaks = []
         legend_text = {}
-        for idx, _range in enumerate(renderer.ranges()):
+
+        # we have to sort ranges in ascending order for FSL compatiblity
+        ranges = renderer.ranges()
+        ranges.sort(key=lambda r: r.lowerValue())
+
+        for idx, _range in enumerate(ranges):
             converted_symbol = FslConverter.symbol_to_fsl(_range.symbol(),
                                                           context,
                                                           layer_opacity)
@@ -818,6 +851,8 @@ class FslConverter:
         if not enabled_layers:
             return []
 
+        enabled_layers.reverse()
+
         symbol_opacity = opacity * symbol.opacity()
         fsl_layers = []
         for layer in enabled_layers:
@@ -825,6 +860,16 @@ class FslConverter:
                 FslConverter.symbol_layer_to_fsl(layer, context,
                                                  symbol_opacity)
             )
+
+        if fsl_layers and symbol.hasDataDefinedProperties():
+            context.push_warning(
+                'Data defined properties cannot be converted',
+                LogLevel.Warning,
+                detail={
+                    'object': 'symbol',
+                    'cause': 'symbol_data_defined_properties',
+                    'summary': 'symbol data defined properties'
+                })
 
         return fsl_layers
 
@@ -876,6 +921,15 @@ class FslConverter:
 
         for _class, converter in SYMBOL_LAYER_CONVERTERS.items():
             if isinstance(layer, _class):
+                if layer.hasDataDefinedProperties():
+                    context.push_warning(
+                        'Data defined properties cannot be converted',
+                        LogLevel.Warning,
+                        detail={
+                            'object': 'symbol_layer',
+                            'cause': 'layer_data_defined_properties',
+                            'summary': 'symbol layer data defined properties'
+                        })
                 return converter(layer, context, symbol_opacity)
 
         context.push_warning('{} symbol layers cannot be converted yet'.format(
@@ -1822,7 +1876,9 @@ class FslConverter:
         Converts label settings to FSL
         """
         if not settings.drawLabels or not settings.fieldName:
-            return None
+            return {
+                'label': {"isClickable": False, "isHoverable": False}
+            }
 
         if settings.isExpression:
             context.push_warning('Expression based labels are not supported',
@@ -1832,8 +1888,9 @@ class FslConverter:
                                      'cause': 'expression_based_label',
                                      'summary': 'expression based label'
                                  })
-
-            return None
+            return {
+                'label': {"isClickable": False, "isHoverable": False}
+            }
 
         converted_format = FslConverter.text_format_to_fsl(
             settings.format(), context
@@ -1942,6 +1999,40 @@ class FslConverter:
         return res
 
     @staticmethod
+    def add_common_layer_properties_to_fsl(
+            layer: QgsMapLayer,
+            fsl: Dict[str, object],
+            context: ConversionContext,
+    ):
+        """
+        Modifies FSL dict in place to add common layer properties
+        """
+        if layer.hasScaleBasedVisibility():
+            if 'style' not in fsl:
+                fsl['style'] = {}
+
+            if layer.minimumScale():
+                if isinstance(fsl['style'], list):
+                    for style in fsl['style']:
+                        style['minZoom'] = (
+                            MapUtils.map_scale_to_leaflet_tile_zoom(
+                                layer.minimumScale()))
+                else:
+                    fsl['style']['minZoom'] = (
+                        MapUtils.map_scale_to_leaflet_tile_zoom(
+                            layer.minimumScale()))
+            if layer.maximumScale():
+                if isinstance(fsl['style'], list):
+                    for style in fsl['style']:
+                        style['maxZoom'] = (
+                            MapUtils.map_scale_to_leaflet_tile_zoom(
+                                layer.maximumScale()))
+                else:
+                    fsl['style']['maxZoom'] = (
+                        MapUtils.map_scale_to_leaflet_tile_zoom(
+                            layer.maximumScale()))
+
+    @staticmethod
     def raster_layer_to_fsl(
             layer: QgsRasterLayer,
             context: ConversionContext
@@ -1953,7 +2044,7 @@ class FslConverter:
             layer.renderer(), context, layer.opacity()
         )
         if not fsl:
-            return None
+            fsl = {}
 
         # resampling only applies to numeric rasters
         if fsl.get('type') == 'numeric':
@@ -1968,17 +2059,11 @@ class FslConverter:
             else:
                 fsl['config']['rasterResampling'] = "nearest"
 
-        if layer.hasScaleBasedVisibility():
-            if layer.minimumScale():
-                fsl['style']['minZoom'] = (
-                    MapUtils.map_scale_to_leaflet_tile_zoom(
-                        layer.minimumScale()))
-            if layer.maximumScale():
-                fsl['style']['maxZoom'] = (
-                    MapUtils.map_scale_to_leaflet_tile_zoom(
-                        layer.maximumScale()))
+        FslConverter.add_common_layer_properties_to_fsl(
+            layer, fsl, context
+        )
 
-        return fsl
+        return fsl or None
 
     @staticmethod
     def raster_renderer_to_fsl(

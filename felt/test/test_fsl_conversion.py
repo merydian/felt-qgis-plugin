@@ -53,7 +53,8 @@ from qgis.core import (
     QgsSingleBandGrayRenderer,
     QgsContrastEnhancement,
     QgsInvertedPolygonRenderer,
-    QgsVectorLayerSimpleLabeling
+    QgsVectorLayerSimpleLabeling,
+    QgsHeatmapRenderer
 )
 
 from .utilities import get_qgis_app
@@ -1462,18 +1463,18 @@ class FslConversionTest(unittest.TestCase):
         self.assertEqual(
             FslConverter.vector_renderer_to_fsl(renderer, conversion_context),
             {'legend': {},
-             'style': [{'color': 'rgb(255, 0, 0)',
-                        'lineCap': 'square',
-                        'lineJoin': 'bevel',
+             'style': [{'color': 'rgb(255, 255, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': 1},
-                       {'color': 'rgb(255, 255, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
+                        'size': 38},
+                       {'color': 'rgb(255, 0, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': 38}],
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
              'type': 'simple'}
         )
 
@@ -1608,6 +1609,25 @@ class FslConversionTest(unittest.TestCase):
              'type': 'simple'}
         )
 
+        # layer with scale based rendering, but non-convertible rule based
+        # renderer
+        layer = QgsVectorLayer('x', '', 'memory')
+        layer.setRenderer(renderer)
+        layer.setScaleBasedVisibility(True)
+        layer.setMinimumScale(10000)
+        self.assertEqual(
+            FslConverter.vector_layer_to_fsl(layer, conversion_context),
+            {'legend': {},
+             'style': {'color': 'rgb(255, 0, 0)',
+                       'lineCap': 'square',
+                       'lineJoin': 'bevel',
+                       'minZoom': 15,
+                       'isClickable': False,
+                       'isHoverable': False,
+                       'size': 1},
+             'type': 'simple'}
+        )
+
     def test_categorical_rule_based_renderer(self):
         """
         Test converting rule based renderers which can be treated as
@@ -1717,46 +1737,48 @@ class FslConversionTest(unittest.TestCase):
              'legend': {'displayName': {'1': 'first cat',
                                         '2': 'second cat',
                                         '3': 'third cat'}},
-             'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)',
+             'style': [{'color': ['rgb(255, 255, 0)', 'rgb(255, 0, 255)',
                                   'rgb(0, 255, 255)'],
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': [1, 23, 26]},
-                       {'color': 'rgb(255, 255, 0)',
+                        'size': [19, 23, 26]},
+                       {'color': 'rgb(255, 0, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': 19}],
+                        'size': 1}
+                       ],
              'type': 'categorical'}
         )
 
         self.assertEqual(
             FslConverter.vector_renderer_to_fsl(renderer, conversion_context,
                                                 layer_opacity=0.5),
-            {'config': {'categories': ['1', '2', '3'],
-                        'categoricalAttribute': 'my_field',
+            {'config': {'categoricalAttribute': 'my_field',
+                        'categories': ['1', '2', '3'],
                         'showOther': False},
              'legend': {'displayName': {'1': 'first cat',
                                         '2': 'second cat',
                                         '3': 'third cat'}},
-             'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)',
+             'style': [{'color': ['rgb(255, 255, 0)',
+                                  'rgb(255, 0, 255)',
                                   'rgb(0, 255, 255)'],
+                        'isClickable': False,
+                        'isHoverable': False,
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'opacity': 0.5,
+                        'size': [19, 23, 26]},
+                       {'color': 'rgb(255, 0, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': [1, 23, 26]},
-                       {'color': 'rgb(255, 255, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'opacity': 0.5,
-                        'isClickable': False,
-                        'isHoverable': False,
-                        'size': 19}],
+                        'size': 1}],
              'type': 'categorical'}
         )
 
@@ -1770,28 +1792,28 @@ class FslConversionTest(unittest.TestCase):
                                                 categories)
         self.assertEqual(
             FslConverter.vector_renderer_to_fsl(renderer, conversion_context),
-            {'config': {'categories': ['1', '2', '3'],
-                        'categoricalAttribute': 'my_field',
+            {'config': {'categoricalAttribute': 'my_field',
+                        'categories': ['1', '2', '3'],
                         'showOther': True},
              'legend': {'displayName': {'1': 'first cat',
                                         '2': 'second cat',
                                         '3': 'third cat',
                                         'Other': 'all others'}},
-             'style': [{'color': ['rgb(255, 0, 0)',
+             'style': [{'color': ['rgb(255, 255, 0)',
                                   'rgb(255, 0, 255)',
                                   'rgb(0, 255, 255)',
                                   'rgb(100, 100, 100)'],
-                        'lineCap': 'square',
-                        'lineJoin': 'bevel',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': [1, 23, 26, 11]},
-                       {'color': 'rgb(255, 255, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
+                        'size': [19, 23, 26, 11]},
+                       {'color': 'rgb(255, 0, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': 19}],
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
              'type': 'categorical'}
         )
 
@@ -1822,7 +1844,7 @@ class FslConversionTest(unittest.TestCase):
                         'showOther': False},
              'legend': {'displayName': {'1': 'first cat', '2': 'second cat'}},
              'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)'],
-                        'dashArray': [0.5, 1.3],
+                        'dashArray': [0.5, 1.3, 0.5, 1.3, 2.5, 1.3],
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'isClickable': False,
@@ -1869,6 +1891,71 @@ class FslConversionTest(unittest.TestCase):
              'type': 'categorical'}
         )
 
+    def test_categorized_dash_array_for_one(self):
+        """
+        Test categorized renderer with dashes on one category only
+        """
+        conversion_context = ConversionContext()
+
+        line = QgsSimpleLineSymbolLayer(color=QColor(255, 0, 0))
+        line.setPenStyle(Qt.DashLine)
+        line_symbol = QgsLineSymbol()
+        line_symbol.changeSymbolLayer(0, line.clone())
+
+        line_symbol2 = QgsLineSymbol()
+        line.setColor(QColor(255, 0, 255))
+        line.setPenStyle(Qt.SolidLine)
+        line_symbol2.changeSymbolLayer(0, line.clone())
+
+        categories = [
+            QgsRendererCategory(1, line_symbol.clone(), 'first cat'),
+            QgsRendererCategory(2, line_symbol2.clone(), 'second cat')
+        ]
+
+        renderer = QgsCategorizedSymbolRenderer('my_field',
+                                                categories)
+        self.assertEqual(
+            FslConverter.vector_renderer_to_fsl(renderer,
+                                                conversion_context),
+            {'config': {'categoricalAttribute': 'my_field',
+                        'categories': ['1', '2'],
+                        'showOther': False},
+             'legend': {'displayName': {'1': 'first cat', '2': 'second cat'}},
+             'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)'],
+                        'dashArray': [[2.5, 2], [1, 0]],
+                        'isClickable': False,
+                        'isHoverable': False,
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
+             'type': 'categorical'}
+        )
+
+        # flip category order and re-test
+        categories = [
+            QgsRendererCategory(1, line_symbol2.clone(), 'first cat'),
+            QgsRendererCategory(2, line_symbol.clone(), 'second cat')
+        ]
+
+        renderer = QgsCategorizedSymbolRenderer('my_field',
+                                                categories)
+        self.assertEqual(
+            FslConverter.vector_renderer_to_fsl(renderer,
+                                                conversion_context),
+            {'config': {'categoricalAttribute': 'my_field',
+                        'categories': ['1', '2'],
+                        'showOther': False},
+             'legend': {'displayName': {'1': 'first cat', '2': 'second cat'}},
+             'style': [{'color': ['rgb(255, 0, 255)', 'rgb(255, 0, 0)'],
+                        'dashArray': [[1, 0], [2.5, 2]],
+                        'isClickable': False,
+                        'isHoverable': False,
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
+             'type': 'categorical'}
+        )
+
     def test_graduated_renderer(self):
         """
         Test converting graduated renderers
@@ -1908,19 +1995,20 @@ class FslConversionTest(unittest.TestCase):
              'legend': {'displayName': {'0': 'first range',
                                         '1': 'second range',
                                         '2': 'third range'}},
-             'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)',
+             'style': [{'color': ['rgb(255, 255, 0)',
+                                  'rgb(255, 0, 255)',
                                   'rgb(0, 255, 255)'],
-                        'lineCap': 'square',
-                        'lineJoin': 'bevel',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': [1, 23, 26]},
-                       {'color': 'rgb(255, 255, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
+                        'size': [19, 23, 26]},
+                       {'color': 'rgb(255, 0, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': 19}],
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
              'type': 'numeric'}
         )
 
@@ -1932,22 +2020,142 @@ class FslConversionTest(unittest.TestCase):
              'legend': {'displayName': {'0': 'first range',
                                         '1': 'second range',
                                         '2': 'third range'}},
-             'style': [{'color': ['rgb(255, 0, 0)', 'rgb(255, 0, 255)',
+             'style': [{'color': ['rgb(255, 255, 0)',
+                                  'rgb(255, 0, 255)',
                                   'rgb(0, 255, 255)'],
+                        'isClickable': False,
+                        'isHoverable': False,
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'opacity': 0.5,
+                        'size': [19, 23, 26]},
+                       {'color': 'rgb(255, 0, 0)',
                         'isClickable': False,
                         'isHoverable': False,
-                        'size': [1, 23, 26]},
-                       {'color': 'rgb(255, 255, 0)',
                         'lineCap': 'square',
                         'lineJoin': 'bevel',
                         'opacity': 0.5,
-                        'isClickable': False,
-                        'isHoverable': False,
-                        'size': 19}],
+                        'size': 1}],
              'type': 'numeric'}
+        )
+
+        # with out of order ranges
+        ranges = [
+            QgsRendererRange(3, 4, line_symbol3.clone(), 'third range'),
+            QgsRendererRange(1, 2, line_symbol.clone(), 'first range'),
+            QgsRendererRange(2, 3, line_symbol2.clone(), 'second range'),
+        ]
+
+        renderer = QgsGraduatedSymbolRenderer('my_field',
+                                              ranges)
+        self.assertEqual(
+            FslConverter.vector_renderer_to_fsl(renderer, conversion_context),
+            {'config': {'numericAttribute': 'my_field',
+                        'steps': [1.0, 2.0, 3.0, 4.0]},
+             'legend': {'displayName': {'0': 'first range',
+                                        '1': 'second range',
+                                        '2': 'third range'}},
+             'style': [{'color': ['rgb(255, 255, 0)',
+                                  'rgb(255, 0, 255)',
+                                  'rgb(0, 255, 255)'],
+                        'isClickable': False,
+                        'isHoverable': False,
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': [19, 23, 26]},
+                       {'color': 'rgb(255, 0, 0)',
+                        'isClickable': False,
+                        'isHoverable': False,
+                        'lineCap': 'square',
+                        'lineJoin': 'bevel',
+                        'size': 1}],
+             'type': 'numeric'}
+        )
+
+    def test_heatmap_renderer(self):
+        """
+        Test converting heatmap renderers
+        """
+        conversion_context = ConversionContext()
+
+        renderer = QgsHeatmapRenderer()
+        self.assertEqual(
+            FslConverter.vector_renderer_to_fsl(renderer, conversion_context),
+            {'legend': {'displayName': {'0': 'Low', '1': 'High'}},
+             'style': {'color': ['#ffffff',
+                                 '#f7f7f7',
+                                 '#eeeeee',
+                                 '#e6e6e6',
+                                 '#dddddd',
+                                 '#d5d5d5',
+                                 '#cccccc',
+                                 '#c3c3c3',
+                                 '#bbbbbb',
+                                 '#b3b3b3',
+                                 '#aaaaaa',
+                                 '#a2a2a2',
+                                 '#999999',
+                                 '#919191',
+                                 '#888888',
+                                 '#808080',
+                                 '#777777',
+                                 '#6f6f6f',
+                                 '#666666',
+                                 '#5e5e5e',
+                                 '#555555',
+                                 '#4d4d4d',
+                                 '#444444',
+                                 '#3b3b3b',
+                                 '#333333',
+                                 '#2a2a2a',
+                                 '#222222',
+                                 '#191919',
+                                 '#111111',
+                                 '#080808'],
+                       'intensity': 1,
+                       'opacity': 1,
+                       'size': 38},
+             'type': 'heatmap'}
+        )
+
+        self.assertEqual(
+            FslConverter.vector_renderer_to_fsl(renderer, conversion_context,
+                                                layer_opacity=0.5),
+            {'legend': {'displayName': {'0': 'Low', '1': 'High'}},
+             'style': {'color': ['#ffffff',
+                                 '#f7f7f7',
+                                 '#eeeeee',
+                                 '#e6e6e6',
+                                 '#dddddd',
+                                 '#d5d5d5',
+                                 '#cccccc',
+                                 '#c3c3c3',
+                                 '#bbbbbb',
+                                 '#b3b3b3',
+                                 '#aaaaaa',
+                                 '#a2a2a2',
+                                 '#999999',
+                                 '#919191',
+                                 '#888888',
+                                 '#808080',
+                                 '#777777',
+                                 '#6f6f6f',
+                                 '#666666',
+                                 '#5e5e5e',
+                                 '#555555',
+                                 '#4d4d4d',
+                                 '#444444',
+                                 '#3b3b3b',
+                                 '#333333',
+                                 '#2a2a2a',
+                                 '#222222',
+                                 '#191919',
+                                 '#111111',
+                                 '#080808'],
+                       'intensity': 1,
+                       'opacity': 0.5,
+                       'size': 38},
+             'type': 'heatmap'}
         )
 
     @unittest.skipIf(Qgis.QGIS_VERSION_INT < 32400, 'QGIS too old')
@@ -2122,20 +2330,23 @@ class FslConversionTest(unittest.TestCase):
 
         # no labels
         label_settings.drawLabels = False
-        self.assertIsNone(
-            FslConverter.label_settings_to_fsl(label_settings, context)
+        self.assertEqual(
+            FslConverter.label_settings_to_fsl(label_settings, context),
+            {'label': {'isClickable': False, 'isHoverable': False}}
         )
         label_settings.drawLabels = True
         label_settings.fieldName = ''
-        self.assertIsNone(
-            FslConverter.label_settings_to_fsl(label_settings, context)
+        self.assertEqual(
+            FslConverter.label_settings_to_fsl(label_settings, context),
+            {'label': {'isClickable': False, 'isHoverable': False}}
         )
 
         # expression labels, unsupported
         label_settings.fieldName = '1 + 2'
         label_settings.isExpression = True
-        self.assertIsNone(
-            FslConverter.label_settings_to_fsl(label_settings, context)
+        self.assertEqual(
+            FslConverter.label_settings_to_fsl(label_settings, context),
+            {'label': {'isClickable': False, 'isHoverable': False}}
         )
 
         # simple field

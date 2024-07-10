@@ -14,7 +14,10 @@ from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsWkbTypes,
     QgsPalettedRasterRenderer,
-    QgsRasterContourRenderer
+    QgsRasterContourRenderer,
+    QgsFeature,
+    QgsGeometry,
+    QgsPointXY
 )
 
 from .utilities import get_qgis_app
@@ -107,6 +110,17 @@ class LayerExporterTest(unittest.TestCase):
             'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
         )
 
+        # test http -> https upgrade
+        layer = QgsRasterLayer(
+            'crs=EPSG:3857&format&type=xyz&url='
+            'http://tile.openstreetmap.org/%7Bz%7D/%7Bx%7D/%7By%7D.png'
+            '&zmax=19&zmin=0',
+            'test', 'wms')
+        self.assertEqual(
+            LayerExporter.layer_import_url(layer),
+            'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+        )
+
         layer = QgsRasterLayer(
             'http-header:referer=&type=xyz&url=http://ecn.t3.tiles.'
             'virtualearth.net/tiles/a%7Bq%7D.jpeg?g%3D1&zmax=18&zmin=0',
@@ -189,7 +203,10 @@ class LayerExporterTest(unittest.TestCase):
             'test')
         self.assertTrue(out_layer.isValid())
         self.assertEqual(out_layer.featureCount(), layer.featureCount())
-        self.assertEqual(out_layer.wkbType(), QgsWkbTypes.MultiPoint)
+        self.assertEqual(out_layer.wkbType(), QgsWkbTypes.Point)
+        self.assertEqual([f.name() for f in out_layer.fields()],
+                         ['fid', 'Class', 'Heading', 'Importance',
+                          'Pilots', 'Cabin Crew', 'Staff'])
 
     def test_gml_conversion(self):
         """
@@ -217,6 +234,115 @@ class LayerExporterTest(unittest.TestCase):
         self.assertTrue(out_layer.isValid())
         self.assertEqual(out_layer.featureCount(), layer.featureCount())
         self.assertEqual(out_layer.wkbType(), QgsWkbTypes.MultiPolygon)
+        if Qgis.QGIS_VERSION_INT >= 32400:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'old_fid', 'name', 'intval', 'floatval'])
+        else:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'name', 'intval', 'floatval'])
+
+    def test_layer_conversion_string_fid(self):
+        """
+        Test vector layer conversion where FID columns are not compatible
+        with geopackge
+        """
+        layer = QgsVectorLayer('Point?crs=EPSG:4326&'
+                               'field=fid:string(255,0)&'
+                               'field=label:string(255,0)', 'test', 'memory')
+        self.assertTrue(layer.isValid())
+
+        f = QgsFeature(layer.fields())
+        f.setAttributes(['abc', 'def'])
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(1, 2)))
+        self.assertTrue(layer.dataProvider().addFeature(f))
+        f.setAttributes(['15', 'ghi'])
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(3, 4)))
+        self.assertTrue(layer.dataProvider().addFeature(f))
+
+        exporter = LayerExporter(
+            QgsCoordinateTransformContext()
+        )
+        conversion_context = ConversionContext()
+        result = exporter.export_layer_for_felt(layer, conversion_context)
+        self.assertEqual(result.result, LayerExportResult.Success)
+        self.assertTrue(result.filename)
+        self.assertEqual(result.filename[-4:], '.zip')
+        with zipfile.ZipFile(result.filename) as z:
+            gpkg_files = [f for f in z.namelist() if f.endswith('gpkg')]
+        self.assertEqual(len(gpkg_files), 1)
+
+        out_layer = QgsVectorLayer(
+            '/vsizip/{}/{}'.format(result.filename, gpkg_files[0]),
+            'test')
+        self.assertTrue(out_layer.isValid())
+        self.assertEqual(out_layer.featureCount(), layer.featureCount())
+        self.assertEqual(out_layer.wkbType(), QgsWkbTypes.Point)
+        if Qgis.QGIS_VERSION_INT >= 32400:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'old_fid', 'label'])
+        else:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'label'])
+        features = list(out_layer.getFeatures())
+        if Qgis.QGIS_VERSION_INT >= 32400:
+            self.assertEqual([feature.attributes() for feature in features],
+                             [[1, 'abc', 'def'],
+                              [2, '15', 'ghi']])
+        else:
+            self.assertEqual([feature.attributes() for feature in features],
+                             [[1, 'def'],
+                              [2, 'ghi']])
+
+    def test_layer_conversion_duplicate_fid(self):
+        """
+        Test vector layer conversion where FID columns are not compatible
+        with geopackge
+        """
+        layer = QgsVectorLayer('Point?crs=EPSG:4326&'
+                               'field=fid:integer&'
+                               'field=label:string(255,0)', 'test', 'memory')
+        self.assertTrue(layer.isValid())
+
+        f = QgsFeature(layer.fields())
+        f.setAttributes([15, 'abc'])
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(1, 2)))
+        self.assertTrue(layer.dataProvider().addFeature(f))
+        f.setAttributes([15, 'def'])
+        f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(3, 4)))
+        self.assertTrue(layer.dataProvider().addFeature(f))
+
+        exporter = LayerExporter(
+            QgsCoordinateTransformContext()
+        )
+        conversion_context = ConversionContext()
+        result = exporter.export_layer_for_felt(layer, conversion_context)
+        self.assertEqual(result.result, LayerExportResult.Success)
+        self.assertTrue(result.filename)
+        self.assertEqual(result.filename[-4:], '.zip')
+        with zipfile.ZipFile(result.filename) as z:
+            gpkg_files = [f for f in z.namelist() if f.endswith('gpkg')]
+        self.assertEqual(len(gpkg_files), 1)
+
+        out_layer = QgsVectorLayer(
+            '/vsizip/{}/{}'.format(result.filename, gpkg_files[0]),
+            'test')
+        self.assertTrue(out_layer.isValid())
+        self.assertEqual(out_layer.featureCount(), layer.featureCount())
+        self.assertEqual(out_layer.wkbType(), QgsWkbTypes.Point)
+        if Qgis.QGIS_VERSION_INT >= 32400:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'old_fid', 'label'])
+        else:
+            self.assertEqual([f.name() for f in out_layer.fields()],
+                             ['fid', 'label'])
+
+        features = list(out_layer.getFeatures())
+        if Qgis.QGIS_VERSION_INT >= 32400:
+            self.assertEqual([feature.attributes() for feature in features],
+                             [[1, 15, 'abc'], [2, 15, 'def']])
+        else:
+            self.assertEqual([feature.attributes() for feature in features],
+                             [[1, 'abc'], [2, 'def']])
 
     def test_raster_conversion_raw(self):
         """
